@@ -88,21 +88,25 @@ jobs:
               executionRoleArn: .executionRoleArn,
               containerDefinitions: .containerDefinitions
             }')
-
           echo "$NEW_TASK_DEF" > new-task-def.json
           TASK_DEF_ARN=$(aws ecs register-task-definition \
             --cli-input-json file://new-task-def.json \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
-          
           echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      - name: Debug task def output
+        run: |
+          echo "Task Def ARN: ${{ steps.task-def.outputs.task_def_arn }}"
 
       - name: Update ECS service with new task definition
         run: |
+          echo "Using task definition: ${{ steps.task-def.outputs.task_def_arn }}"
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
-            --task-definition ${{ steps.task-def.outputs.task_def_arn }}
+            --task-definition "${{ steps.task-def.outputs.task_def_arn }}"
+
 
 
 
