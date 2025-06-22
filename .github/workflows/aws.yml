@@ -24,12 +24,13 @@
 #    See the documentation for each action used below for the recommended IAM policies for this IAM user,
 #    and best practices on handling the access key credentials.
 
+# .github/workflows/aws.yml
 name: Deploy to AWS ECS
 
 on:
   push:
     branches:
-      - main  # Adjust as needed
+      - main
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -41,11 +42,11 @@ env:
 
 jobs:
   deploy:
-    name: Build, Push to ECR, and Deploy to ECS
+    name: Build, Push, and Deploy
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials
@@ -55,49 +56,47 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
+      - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Extract Git commit short SHA
+        id: vars
+        run: echo "IMAGE_TAG=$(echo ${GITHUB_SHA::7})" >> $GITHUB_ENV
+
       - name: Build Docker image
         run: |
-          IMAGE_TAG=${GITHUB_SHA::8}
           docker build -t $ECR_REPOSITORY:latest .
           docker tag $ECR_REPOSITORY:latest $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      - name: Push image to Amazon ECR
+      - name: Push Docker image to ECR
         run: |
-          IMAGE_TAG=${GITHUB_SHA::8}
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      - name: Update ECS service with new task definition
+      - name: Update ECS service with new image
         run: |
-          IMAGE_TAG=${GITHUB_SHA::8}
-
-          # Get current task definition
           TASK_DEF=$(aws ecs describe-task-definition --task-definition $ECS_TASK_DEFINITION)
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            '.taskDefinition | { 
+              family, 
+              networkMode, 
+              requiresCompatibilities, 
+              cpu, 
+              memory, 
+              executionRoleArn, 
+              containerDefinitions: [.containerDefinitions[0] + {image: $IMAGE}]
+            }')
 
-          # Create new task definition with updated image
-          NEW_TASK_DEF=$(echo $TASK_DEF | jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
-            '.taskDefinition | 
-            {family: .family, containerDefinitions: (.containerDefinitions | map(.image = $IMAGE)), 
-             networkMode, requiresCompatibilities, cpu, memory, executionRoleArn} | 
-            {family, containerDefinitions, networkMode, requiresCompatibilities, cpu, memory, executionRoleArn}')
-
-          # Register new task definition
           NEW_REVISION=$(aws ecs register-task-definition \
-            --cli-input-json "$(echo $NEW_TASK_DEF)" \
+            --cli-input-json "$(echo $NEW_TASK_DEF | jq -c .)" \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
 
-          # Update ECS service
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
             --task-definition $NEW_REVISION
 
-      - name: Done
-        run: echo "✅ Deployment complete!"
 
 
 
