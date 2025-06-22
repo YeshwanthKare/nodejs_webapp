@@ -29,69 +29,75 @@ name: Deploy to AWS ECS
 on:
   push:
     branches:
-      - main  # Trigger deployment on push to the main branch
-  pull_request:
-    branches:
-      - main  # Trigger deployment on PR merge to main branch
+      - main  # Adjust as needed
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
+  ECS_TASK_DEFINITION: ${{ secrets.ECS_TASK_DEFINITION }}
 
 jobs:
   deploy:
+    name: Build, Push to ECR, and Deploy to ECS
     runs-on: ubuntu-latest
-    
+
     steps:
-      # Step 1: Checkout the code
-      - name: Checkout code
-        uses: actions/checkout@v2
-        
-      # Step 2: Set up AWS credentials
-      - name: Set up AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-          
-      # Step 3: Log in to Amazon ECR
-      - name: Log in to Amazon ECR
-        run: |
-          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      # Step 4: Build the Docker image
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
       - name: Build Docker image
         run: |
-          docker build -t ${{ secrets.ECR_REPOSITORY }} .
-          
-      # Step 5: Tag the Docker image with the latest version (and commit hash)
-      - name: Tag Docker image
+          IMAGE_TAG=${GITHUB_SHA::8}
+          docker build -t $ECR_REPOSITORY:latest .
+          docker tag $ECR_REPOSITORY:latest $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Push image to Amazon ECR
         run: |
-          IMAGE_TAG=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
-          docker tag ${{ secrets.ECR_REPOSITORY }:latest} ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
-          
-      # Step 6: Push Docker image to Amazon ECR
-      - name: Push Docker image to ECR
+          IMAGE_TAG=${GITHUB_SHA::8}
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Update ECS service with new task definition
         run: |
-          docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
-          
-      # Step 7: Update ECS service with the new image
-      - name: Update ECS service
-        run: |
+          IMAGE_TAG=${GITHUB_SHA::8}
+
+          # Get current task definition
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition $ECS_TASK_DEFINITION)
+
+          # Create new task definition with updated image
+          NEW_TASK_DEF=$(echo $TASK_DEF | jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            '.taskDefinition | 
+            {family: .family, containerDefinitions: (.containerDefinitions | map(.image = $IMAGE)), 
+             networkMode, requiresCompatibilities, cpu, memory, executionRoleArn} | 
+            {family, containerDefinitions, networkMode, requiresCompatibilities, cpu, memory, executionRoleArn}')
+
+          # Register new task definition
+          NEW_REVISION=$(aws ecs register-task-definition \
+            --cli-input-json "$(echo $NEW_TASK_DEF)" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          # Update ECS service
           aws ecs update-service \
-            --cluster ${{ secrets.ECS_CLUSTER }} \
-            --service ${{ secrets.ECS_SERVICE }} \
-            --force-new-deployment \
-            --region ${{ secrets.AWS_REGION }}
-            
-      # Step 8: Wait for the ECS service to stabilize (optional but recommended)
-      - name: Wait for ECS service to stabilize
-        run: |
-          aws ecs wait services-stable \
-            --cluster ${{ secrets.ECS_CLUSTER }} \
-            --services ${{ secrets.ECS_SERVICE }} \
-            --region ${{ secrets.AWS_REGION }}
-        
-      # Step 9: Optional - Notify deployment success (you can add email notifications here)
-      - name: Notify deployment success
-        run: |
-          echo "Deployment to ECS successful!"
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition $NEW_REVISION
+
+      - name: Done
+        run: echo "✅ Deployment complete!"
+
 
 
