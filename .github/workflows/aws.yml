@@ -97,35 +97,37 @@ jobs:
             --output text)
           echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-      - name: Create ECS service if not exists
+      - name: Debug ECS service and cluster
         run: |
-          SERVICE_EXISTS=$(aws ecs describe-services \
-            --cluster $ECS_CLUSTER \
-            --services $ECS_SERVICE \
-            --region $AWS_REGION \
-            --query "services[0].serviceName" || echo "")
-          
-          if [ -z "$SERVICE_EXISTS" ]; then
-            echo "Service does not exist. Creating ECS service..."
-            aws ecs create-service \
-              --cluster $ECS_CLUSTER \
-              --service $ECS_SERVICE \
-              --task-definition $ECS_TASK_DEFINITION \
-              --desired-count 1 \
-              --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[${{ env.SUBNETS }}],securityGroups=[${{ env.SECURITY_GROUP }}],assignPublicIp=ENABLED}" \
-              --region $AWS_REGION
-          else
-            echo "Service already exists. Skipping creation."
-          fi
+          echo "Checking ECS cluster and service status..."
+          aws ecs describe-clusters --clusters $ECS_CLUSTER --region $AWS_REGION
+          aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --region $AWS_REGION
 
       - name: Update ECS service with new task definition
         run: |
           echo "Using task definition: ${{ steps.task-def.outputs.task_def_arn }}"
-          aws ecs update-service \
+          # Check the service status first
+          SERVICE_STATUS=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION \
+            --query "services[0].status" || echo "Service Not Found")
+          echo "Current service status: $SERVICE_STATUS"
+          
+          # Attempt to update the service
+          UPDATE_RESULT=$(aws ecs update-service \
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
-            --task-definition "${{ steps.task-def.outputs.task_def_arn }}"
+            --task-definition "${{ steps.task-def.outputs.task_def_arn }}" 2>&1)
+          
+          # Print the update result for debugging
+          echo "Update result: $UPDATE_RESULT"
+          
+          # Fail the step if the update fails
+          if [[ "$UPDATE_RESULT" == *"error"* ]]; then
+            exit 1
+          fi
+
 
 
 
