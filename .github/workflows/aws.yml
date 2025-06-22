@@ -39,6 +39,8 @@ env:
   ECS_CLUSTER: webapp-cicd-cluster
   ECS_SERVICE: webapp-cicd-service
   ECS_TASK_DEFINITION: webapp-cicd-task
+  SUBNETS: "subnet-03d467e2c092e7990,subnet-064f12e5a2054dc21,subnet-0829c5017cfa668a6"
+  SECURITY_GROUP: "sg-084470f3b069ea7f5"
 
 jobs:
   deploy:
@@ -93,18 +95,29 @@ jobs:
             --cli-input-json file://new-task-def.json \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
-          
           echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-      - name: Debug ECS cluster and service
+      - name: Create ECS service if not exists
         run: |
-          echo "Checking ECS cluster and service status..."
-          aws ecs describe-clusters --clusters $ECS_CLUSTER --region $AWS_REGION
-          aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --region $AWS_REGION
-
-      - name: Debug task def output
-        run: |
-          echo "Task Def ARN: ${{ steps.task-def.outputs.task_def_arn }}"
+          SERVICE_EXISTS=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION \
+            --query "services[0].serviceName" || echo "")
+          
+          if [ -z "$SERVICE_EXISTS" ]; then
+            echo "Service does not exist. Creating ECS service..."
+            aws ecs create-service \
+              --cluster $ECS_CLUSTER \
+              --service $ECS_SERVICE \
+              --task-definition $ECS_TASK_DEFINITION \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[${{ env.SUBNETS }}],securityGroups=[${{ env.SECURITY_GROUP }}],assignPublicIp=ENABLED}" \
+              --region $AWS_REGION
+          else
+            echo "Service already exists. Skipping creation."
+          fi
 
       - name: Update ECS service with new task definition
         run: |
@@ -113,6 +126,7 @@ jobs:
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
             --task-definition "${{ steps.task-def.outputs.task_def_arn }}"
+
 
 
 
